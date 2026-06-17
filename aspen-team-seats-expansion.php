@@ -287,23 +287,18 @@ if ( ! class_exists( 'Aspen_Team_Seats_Expansion' ) ) {
 		}
 
 		/**
-		 * Get membership data for the team.
+		 * Get membership data for the current user's membership tied to the team.
+		 *
+		 * Team posts can have a WordPress post status such as publish, so membership
+		 * status must come from the related wc_user_membership record instead.
 		 *
 		 * @param object $team Team object.
 		 * @return array<int,array{plan_id:int,status:string}>
 		 */
 		private function get_team_membership_data( $team ) {
 			$memberships = array();
-			$team_status = $this->get_team_membership_status( $team );
 
-			if ( is_callable( array( $team, 'get_plan_id' ) ) ) {
-				$memberships[] = array(
-					'plan_id' => absint( $team->get_plan_id() ),
-					'status'  => $team_status,
-				);
-			}
-
-			foreach ( $this->get_team_user_memberships( $team ) as $user_membership ) {
+			foreach ( $this->get_current_user_team_user_memberships( $team ) as $user_membership ) {
 				if ( ! is_callable( array( $user_membership, 'get_plan_id' ) ) ) {
 					continue;
 				}
@@ -322,6 +317,75 @@ if ( ! class_exists( 'Aspen_Team_Seats_Expansion' ) ) {
 					}
 				)
 			);
+		}
+
+		/**
+		 * Get current user memberships that belong to the team.
+		 *
+		 * @param object $team Team object.
+		 * @return array<int,object>
+		 */
+		private function get_current_user_team_user_memberships( $team ) {
+			$user_id = get_current_user_id();
+
+			if ( ! $user_id || ! function_exists( 'wc_memberships_get_user_memberships' ) ) {
+				return array();
+			}
+
+			$user_memberships = wc_memberships_get_user_memberships(
+				$user_id,
+				array(
+					'status' => 'any',
+				)
+			);
+
+			if ( ! is_array( $user_memberships ) ) {
+				return array();
+			}
+
+			$team_id     = $this->get_team_id( $team );
+			$team_plan_id = is_callable( array( $team, 'get_plan_id' ) ) ? absint( $team->get_plan_id() ) : 0;
+			$memberships = array();
+
+			foreach ( $user_memberships as $user_membership ) {
+				if ( ! is_object( $user_membership ) || ! is_callable( array( $user_membership, 'get_id' ) ) ) {
+					continue;
+				}
+
+				if ( $team_id && function_exists( 'wc_memberships_for_teams_get_user_membership_team' ) ) {
+					$membership_team = wc_memberships_for_teams_get_user_membership_team( $user_membership->get_id() );
+
+					if ( $membership_team && $team_id === $this->get_team_id( $membership_team ) ) {
+						$memberships[] = $user_membership;
+					}
+
+					continue;
+				}
+
+				if ( $team_plan_id && is_callable( array( $user_membership, 'get_plan_id' ) ) && $team_plan_id === absint( $user_membership->get_plan_id() ) ) {
+					$memberships[] = $user_membership;
+				}
+			}
+
+			return $memberships;
+		}
+
+		/**
+		 * Get a team ID from a team object.
+		 *
+		 * @param object $team Team object.
+		 * @return int
+		 */
+		private function get_team_id( $team ) {
+			if ( is_callable( array( $team, 'get_id' ) ) ) {
+				return absint( $team->get_id() );
+			}
+
+			if ( isset( $team->ID ) ) {
+				return absint( $team->ID );
+			}
+
+			return 0;
 		}
 
 		/**
@@ -351,24 +415,6 @@ if ( ! class_exists( 'Aspen_Team_Seats_Expansion' ) ) {
 			$statuses = wp_list_pluck( $this->get_team_membership_data( $team ), 'status' );
 
 			return array_values( array_unique( array_filter( $statuses ) ) );
-		}
-
-		/**
-		 * Get normalized status from a team object.
-		 *
-		 * @param object $team Team object.
-		 * @return string
-		 */
-		private function get_team_membership_status( $team ) {
-			if ( is_callable( array( $team, 'get_status' ) ) ) {
-				return $this->normalize_membership_status( $team->get_status() );
-			}
-
-			if ( is_callable( array( $team, 'get_id' ) ) ) {
-				return $this->normalize_membership_status( get_post_status( $team->get_id() ) );
-			}
-
-			return '';
 		}
 
 		/**
@@ -413,32 +459,6 @@ if ( ! class_exists( 'Aspen_Team_Seats_Expansion' ) ) {
 		 */
 		private function format_membership_status( $status ) {
 			return ucwords( str_replace( array( '-', '_' ), ' ', $this->normalize_membership_status( $status ) ) );
-		}
-
-		/**
-		 * Get user memberships attached to the team.
-		 *
-		 * @param object $team Team object.
-		 * @return array<int,object>
-		 */
-		private function get_team_user_memberships( $team ) {
-			if ( is_callable( array( $team, 'get_user_memberships' ) ) ) {
-				$memberships = $team->get_user_memberships();
-
-				return is_array( $memberships ) ? $memberships : array();
-			}
-
-			if ( is_callable( array( $team, 'get_id' ) ) && function_exists( 'wc_memberships_get_user_memberships' ) ) {
-				$memberships = wc_memberships_get_user_memberships(
-					array(
-						'team_id' => $team->get_id(),
-					)
-				);
-
-				return is_array( $memberships ) ? $memberships : array();
-			}
-
-			return array();
 		}
 
 	}

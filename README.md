@@ -24,7 +24,7 @@ If the current visitor is not logged in or is not associated with a team, the sh
 
 ### Display the current user's team status
 
-Use `[teamx_status]` anywhere shortcodes are supported to display the current user's team membership status, formatted for display. For example, a stored status of `wcm-paused` displays as `Paused`.
+Use `[teamx_status]` anywhere shortcodes are supported to display the current user's team user-membership status, formatted for display. For example, a stored `wc_user_membership` status of `wcm-paused` displays as `Paused`.
 
 ```text
 Your team membership is currently: [teamx_status]
@@ -137,7 +137,7 @@ Hide this from teams that have both plan 111 and plan 222.
 ## Notes for content authors
 
 - Use membership plan ID numbers in the `plan` attribute, not plan names.
-- Use membership status slugs without the `wcm-` prefix in the `status` attribute, such as `active`, `paused`, or `canceled`.
+- Use membership status slugs from the related `wc_user_membership` record without the `wcm-` prefix in the `status` attribute, such as `active`, `paused`, or `canceled`.
 - Commas are evaluated as OR groups.
 - Plus signs are evaluated within each OR group as AND conditions.
 - Exclamation points negate a single plan ID.
