@@ -54,6 +54,7 @@ if ( ! class_exists( 'Aspen_Team_Seats_Expansion' ) ) {
 		public function register_shortcodes() {
 			add_shortcode( 'teamx_name', array( $this, 'team_name_shortcode' ) );
 			add_shortcode( 'teamx_restrict', array( $this, 'restrict_shortcode' ) );
+			add_shortcode( 'teamx_status', array( $this, 'team_status_shortcode' ) );
 		}
 
 		/**
@@ -72,6 +73,27 @@ if ( ! class_exists( 'Aspen_Team_Seats_Expansion' ) ) {
 		}
 
 		/**
+		 * Display the current user's team membership status.
+		 *
+		 * @return string
+		 */
+		public function team_status_shortcode() {
+			$team = $this->get_current_user_team();
+
+			if ( ! $team ) {
+				return '';
+			}
+
+			$statuses = $this->get_team_membership_statuses( $team );
+
+			if ( empty( $statuses ) ) {
+				return '';
+			}
+
+			return esc_html( $this->format_membership_status( reset( $statuses ) ) );
+		}
+
+		/**
 		 * Conditionally display enclosed content based on team plan membership.
 		 *
 		 * @param array<string,mixed> $atts Shortcode attributes.
@@ -81,14 +103,15 @@ if ( ! class_exists( 'Aspen_Team_Seats_Expansion' ) ) {
 		public function restrict_shortcode( $atts, $content = null ) {
 			$atts = shortcode_atts(
 				array(
-					'plan' => '',
-					'mode' => 'show',
+					'plan'   => '',
+					'status' => '',
+					'mode'   => 'show',
 				),
 				(array) $atts,
 				'teamx_restrict'
 			);
 
-			$matches = $this->current_user_matches_plan_expression( (string) $atts['plan'] );
+			$matches = $this->current_user_matches_restriction( (string) $atts['plan'], (string) $atts['status'] );
 			$mode    = strtolower( trim( (string) $atts['mode'] ) );
 			$show    = 'hide' === $mode ? ! $matches : $matches;
 
@@ -100,22 +123,63 @@ if ( ! class_exists( 'Aspen_Team_Seats_Expansion' ) ) {
 		}
 
 		/**
-		 * Check whether the current user's team has an active membership matching a plan expression.
+		 * Check whether the current user's team matches the supplied plan and status expressions.
 		 *
-		 * The expression supports OR with commas, AND with plus signs, and NOT with an exclamation mark.
-		 * Example: 111,!333 means plan 111 OR not plan 333; 111+222 means plan 111 AND plan 222.
+		 * If no status expression is supplied, plan checks are limited to active memberships to
+		 * preserve the original shortcode behavior. If a status expression is supplied, plan
+		 * checks are made against memberships matching that status expression.
 		 *
-		 * @param string $expression Plan expression.
+		 * @param string $plan_expression Plan expression.
+		 * @param string $status_expression Status expression.
 		 * @return bool
 		 */
-		private function current_user_matches_plan_expression( $expression ) {
+		private function current_user_matches_restriction( $plan_expression, $status_expression ) {
 			$team = $this->get_current_user_team();
 
-			if ( ! $team || '' === trim( $expression ) ) {
+			if ( ! $team ) {
 				return false;
 			}
 
-			$active_plan_ids = $this->get_active_team_plan_ids( $team );
+			$memberships = $this->get_team_membership_data( $team );
+
+			if ( '' !== trim( $status_expression ) ) {
+				$memberships = array_filter(
+					$memberships,
+					function ( $membership ) use ( $status_expression ) {
+						return $this->status_matches_expression( $membership['status'], $status_expression );
+					}
+				);
+
+				if ( empty( $memberships ) ) {
+					return false;
+				}
+			} else {
+				$memberships = array_filter(
+					$memberships,
+					function ( $membership ) {
+						return 'active' === $membership['status'];
+					}
+				);
+			}
+
+			if ( '' === trim( $plan_expression ) ) {
+				return ! empty( $memberships );
+			}
+
+			return $this->plan_matches_expression( $this->get_plan_ids_from_membership_data( $memberships ), $plan_expression );
+		}
+
+		/**
+		 * Check whether a set of plan IDs matches a plan expression.
+		 *
+		 * @param int[]  $plan_ids Plan IDs.
+		 * @param string $expression Plan expression.
+		 * @return bool
+		 */
+		private function plan_matches_expression( $plan_ids, $expression ) {
+			if ( '' === trim( $expression ) ) {
+				return false;
+			}
 
 			foreach ( array_filter( array_map( 'trim', explode( ',', $expression ) ) ) as $or_group ) {
 				$and_result = true;
@@ -129,8 +193,44 @@ if ( ! class_exists( 'Aspen_Team_Seats_Expansion' ) ) {
 						break;
 					}
 
-					$has_plan    = in_array( $plan_id, $active_plan_ids, true );
+					$has_plan   = in_array( $plan_id, $plan_ids, true );
 					$and_result = $and_result && ( $negated ? ! $has_plan : $has_plan );
+				}
+
+				if ( $and_result ) {
+					return true;
+				}
+			}
+
+			return false;
+		}
+
+		/**
+		 * Check whether a membership status matches a status expression.
+		 *
+		 * @param string $status Status slug without the wcm- prefix.
+		 * @param string $expression Status expression.
+		 * @return bool
+		 */
+		private function status_matches_expression( $status, $expression ) {
+			if ( '' === trim( $expression ) ) {
+				return false;
+			}
+
+			foreach ( array_filter( array_map( 'trim', explode( ',', $expression ) ) ) as $or_group ) {
+				$and_result = true;
+
+				foreach ( array_filter( array_map( 'trim', explode( '+', $or_group ) ) ) as $token ) {
+					$negated      = 0 === strpos( $token, '!' );
+					$token_status = $this->normalize_membership_status( $negated ? substr( $token, 1 ) : $token );
+
+					if ( '' === $token_status ) {
+						$and_result = false;
+						break;
+					}
+
+					$has_status = $status === $token_status;
+					$and_result = $and_result && ( $negated ? ! $has_status : $has_status );
 				}
 
 				if ( $and_result ) {
@@ -187,47 +287,132 @@ if ( ! class_exists( 'Aspen_Team_Seats_Expansion' ) ) {
 		}
 
 		/**
-		 * Get active membership plan IDs for the team.
+		 * Get membership data for the team.
 		 *
 		 * @param object $team Team object.
-		 * @return int[]
+		 * @return array<int,array{plan_id:int,status:string}>
 		 */
-		private function get_active_team_plan_ids( $team ) {
-			$plan_ids = array();
+		private function get_team_membership_data( $team ) {
+			$memberships = array();
+			$team_status = $this->get_team_membership_status( $team );
 
-			if ( is_callable( array( $team, 'get_plan_id' ) ) && $this->team_has_active_membership( $team ) ) {
-				$plan_ids[] = absint( $team->get_plan_id() );
+			if ( is_callable( array( $team, 'get_plan_id' ) ) ) {
+				$memberships[] = array(
+					'plan_id' => absint( $team->get_plan_id() ),
+					'status'  => $team_status,
+				);
 			}
 
 			foreach ( $this->get_team_user_memberships( $team ) as $user_membership ) {
-				if ( ! $this->user_membership_is_active( $user_membership ) ) {
+				if ( ! is_callable( array( $user_membership, 'get_plan_id' ) ) ) {
 					continue;
 				}
 
-				if ( is_callable( array( $user_membership, 'get_plan_id' ) ) ) {
-					$plan_ids[] = absint( $user_membership->get_plan_id() );
-				}
+				$memberships[] = array(
+					'plan_id' => absint( $user_membership->get_plan_id() ),
+					'status'  => $this->get_user_membership_status( $user_membership ),
+				);
 			}
 
-			return array_values( array_unique( array_filter( $plan_ids ) ) );
+			return array_values(
+				array_filter(
+					$memberships,
+					function ( $membership ) {
+						return ! empty( $membership['plan_id'] ) && ! empty( $membership['status'] );
+					}
+				)
+			);
 		}
 
 		/**
-		 * Determine whether the team itself reports an active membership status.
+		 * Get plan IDs from membership data.
+		 *
+		 * @param array<int,array{plan_id:int,status:string}> $memberships Membership data.
+		 * @return int[]
+		 */
+		private function get_plan_ids_from_membership_data( $memberships ) {
+			return array_values(
+				array_unique(
+					array_map(
+						'absint',
+						wp_list_pluck( $memberships, 'plan_id' )
+					)
+				)
+			);
+		}
+
+		/**
+		 * Get membership statuses for the team.
 		 *
 		 * @param object $team Team object.
-		 * @return bool
+		 * @return string[]
 		 */
-		private function team_has_active_membership( $team ) {
-			if ( is_callable( array( $team, 'has_active_membership' ) ) ) {
-				return (bool) $team->has_active_membership();
-			}
+		private function get_team_membership_statuses( $team ) {
+			$statuses = wp_list_pluck( $this->get_team_membership_data( $team ), 'status' );
 
+			return array_values( array_unique( array_filter( $statuses ) ) );
+		}
+
+		/**
+		 * Get normalized status from a team object.
+		 *
+		 * @param object $team Team object.
+		 * @return string
+		 */
+		private function get_team_membership_status( $team ) {
 			if ( is_callable( array( $team, 'get_status' ) ) ) {
-				return 'active' === (string) $team->get_status();
+				return $this->normalize_membership_status( $team->get_status() );
 			}
 
-			return true;
+			if ( is_callable( array( $team, 'get_id' ) ) ) {
+				return $this->normalize_membership_status( get_post_status( $team->get_id() ) );
+			}
+
+			return '';
+		}
+
+		/**
+		 * Get normalized status from a user membership object.
+		 *
+		 * @param object $user_membership User membership object.
+		 * @return string
+		 */
+		private function get_user_membership_status( $user_membership ) {
+			if ( is_callable( array( $user_membership, 'get_status' ) ) ) {
+				return $this->normalize_membership_status( $user_membership->get_status() );
+			}
+
+			if ( is_callable( array( $user_membership, 'get_id' ) ) ) {
+				return $this->normalize_membership_status( get_post_status( $user_membership->get_id() ) );
+			}
+
+			return '';
+		}
+
+		/**
+		 * Normalize membership statuses to slugs without the wcm- prefix.
+		 *
+		 * @param string $status Membership status.
+		 * @return string
+		 */
+		private function normalize_membership_status( $status ) {
+			$status = sanitize_key( (string) $status );
+
+			if ( 0 === strpos( $status, 'wcm-' ) ) {
+				$status = substr( $status, 4 );
+			}
+
+			return $status;
+		}
+
+		/**
+		 * Format a membership status for display.
+		 *
+		 * @param string $status Membership status slug without the wcm- prefix.
+		 * @return string
+		 */
+		private function format_membership_status( $status ) {
+			return ucwords( str_replace( array( '-', '_' ), ' ', $this->normalize_membership_status( $status ) ) );
 		}
 
 		/**
@@ -256,23 +441,6 @@ if ( ! class_exists( 'Aspen_Team_Seats_Expansion' ) ) {
 			return array();
 		}
 
-		/**
-		 * Determine whether a user membership is active.
-		 *
-		 * @param object $user_membership User membership object.
-		 * @return bool
-		 */
-		private function user_membership_is_active( $user_membership ) {
-			if ( is_callable( array( $user_membership, 'is_active' ) ) ) {
-				return (bool) $user_membership->is_active();
-			}
-
-			if ( is_callable( array( $user_membership, 'has_status' ) ) ) {
-				return (bool) $user_membership->has_status( 'active' );
-			}
-
-			return false;
-		}
 	}
 }
 
